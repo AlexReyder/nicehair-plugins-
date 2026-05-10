@@ -31,9 +31,10 @@ trait NH_TKI_ExclusiveHairProductImporterTrait
         $product->set_stock_status($inStock ? 'instock' : 'outofstock');
         $product->set_featured((bool) ($item['featured'] ?? false));
         $product->set_category_ids([$this->ensure_product_category(NH_TKI_Plugin::EXCLUSIVE_CATEGORY)]);
-        $baseLotPrice = (string) ($item['base_lot_price'] ?? $item['regular_price'] ?? '');
-        $product->set_regular_price($baseLotPrice);
-        $product->set_sale_price('');
+        $regularPrice = (string) ($item['regular_price'] ?? $item['base_lot_price'] ?? '');
+        $salePrice = $item['sale_price'] ?? null;
+        $product->set_regular_price($regularPrice);
+        $product->set_sale_price($salePrice !== null && $salePrice !== '' ? (string) $salePrice : '');
 
         $product->set_short_description((string) ($item['description'] ?? ''));
         $product->set_description((string) ($item['description'] ?? ''));

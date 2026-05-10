@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Nice Hair Tools & Keratin Importer
  * Description: Imports Tools, Keratin, Ready to Install, Exclusive Hair and Custom Hair products for Nice Hair from XLSX + ZIP sources.
- * Version: 0.1.4
+ * Version: 0.1.8
  * Author: Nice Hair
  * Text Domain: nice-hair-tools-keratin-importer
  */
@@ -12,7 +12,7 @@ declare(strict_types=1);
 defined('ABSPATH') || exit;
 
 define('NH_TKI_PLUGIN_FILE', __FILE__);
-define('NH_TKI_PLUGIN_VERSION', '0.1.4');
+define('NH_TKI_PLUGIN_VERSION', '0.1.7');
 
 $nh_tki_files = [
     'src/Config/PluginConfig.php',

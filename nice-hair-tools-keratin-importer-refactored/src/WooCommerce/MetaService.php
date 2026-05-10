@@ -50,11 +50,10 @@ trait NH_TKI_MetaServiceTrait
             }
         }
 
-        if ($compareAtLotPrice !== null && $baseLotPrice !== null && (float) $compareAtLotPrice > (float) $baseLotPrice) {
-            update_post_meta($postId, 'nh_compare_at_lot_price', (float) $compareAtLotPrice);
-        } else {
-            delete_post_meta($postId, 'nh_compare_at_lot_price');
-        }
+        // Compare-at / old price for Exclusive Hair is now stored in WooCommerce
+        // regular_price when a sale_price exists. Clear the legacy custom meta to avoid
+        // stale frontend data after re-importing products created by older plugin versions.
+        delete_post_meta($postId, 'nh_compare_at_lot_price');
     }
     private function update_custom_hair_config_meta(
         int $postId,
@@ -74,37 +73,27 @@ trait NH_TKI_MetaServiceTrait
             return;
         }
 
-        $colorRows = [];
-        $fallbackImageIds = array_values(array_unique(array_filter(array_map('intval', $imageIds))));
-        $fallbackIndex = 0;
+        $selectedGlobalColorKeys = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $key): string => trim((string) $key),
+            (array) ($item['selected_global_color_keys'] ?? [])
+        ))));
 
-        foreach ((array) ($item['color_options'] ?? []) as $option) {
-            if (! is_array($option)) {
-                continue;
-            }
+        $this->update_custom_hair_selected_global_colors_field($postId, $selectedGlobalColorKeys);
+    }
+    private function update_custom_hair_selected_global_colors_field(int $postId, array $keys): void
+    {
+        $keys = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $key): string => trim((string) $key),
+            $keys
+        ))));
 
-            $key = (string) ($option['key'] ?? '');
-            $imageId = $this->get_custom_hair_color_option_image_id((string) ($option['photo_file'] ?? ''), $imageIdByFile);
+        if (function_exists('update_field')) {
+            update_field('field_nh_product_custom_hair_selected_global_colors', $keys, $postId);
 
-            if ($imageId <= 0 && isset($existingColorImageMap[$key])) {
-                $existingImageId = (int) $existingColorImageMap[$key];
-                $imageId = get_post($existingImageId) instanceof WP_Post ? $existingImageId : 0;
-            }
-
-            if ($imageId <= 0 && isset($fallbackImageIds[$fallbackIndex])) {
-                $imageId = (int) $fallbackImageIds[$fallbackIndex];
-                $fallbackIndex++;
-            }
-
-            $colorRows[] = [
-                'color_label' => (string) ($option['label'] ?? ''),
-                'color_value' => (string) ($option['value'] ?? ''),
-                'color_group' => (string) ($option['group'] ?? ''),
-                'main_image' => $imageId > 0 ? $imageId : '',
-            ];
+            return;
         }
 
-        $this->update_custom_hair_color_options_field($postId, $colorRows);
+        update_post_meta($postId, 'nh_custom_hair_selected_global_colors', $keys);
     }
     private function update_custom_hair_field(int $postId, string $fieldKey, string $fieldName, mixed $value): void
     {

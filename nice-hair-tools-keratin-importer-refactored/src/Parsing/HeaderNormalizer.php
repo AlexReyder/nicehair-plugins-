@@ -48,7 +48,6 @@ trait NH_TKI_HeaderNormalizerTrait
     {
         return in_array('название товара', $headers, true)
             && in_array('артикул', $headers, true)
-            && in_array('тип наращивания', $headers, true)
             && in_array('цветовые опции', $headers, true)
             && (in_array('мин. вес, гр', $headers, true) || in_array('мин вес, гр', $headers, true) || in_array('min weight', $headers, true));
     }

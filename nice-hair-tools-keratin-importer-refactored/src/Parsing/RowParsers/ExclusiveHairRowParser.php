@@ -41,11 +41,12 @@ trait NH_TKI_ExclusiveHairRowParserTrait
                 continue;
             }
 
-            // Variant B model for Exclusive Hair:
-            // - WooCommerce regular price always equals the current base lot price.
-            // - WooCommerce sale price is not used.
-            // - Optional compare-at / old price is stored separately for frontend strike-through rendering.
-            $regularPrice = $baseLotPrice;
+            // Exclusive Hair pricing model:
+            // - ACF base lot price is always the current selling base.
+            // - If compare-at price is provided, WooCommerce regular price stores it
+            //   and WooCommerce sale price stores the current base lot price.
+            // - If compare-at price is empty, WooCommerce regular price equals base lot price
+            //   and WooCommerce sale price is cleared.
             $compareAtLotRaw = $this->get_first_row_value($row, $map, [
                 'цена до скидки',
                 'compare-at price',
@@ -64,6 +65,9 @@ trait NH_TKI_ExclusiveHairRowParserTrait
                 );
                 $compareAtLotPrice = null;
             }
+
+            $regularPrice = $compareAtLotPrice ?? $baseLotPrice;
+            $salePrice = $compareAtLotPrice !== null ? $baseLotPrice : null;
 
             $fixedWeightRaw = $this->get_first_row_value($row, $map, ['вес, гр', 'вес гр', 'fixed weight']);
             $fixedWeight = $this->parse_positive_number($fixedWeightRaw);
@@ -106,6 +110,7 @@ trait NH_TKI_ExclusiveHairRowParserTrait
                 'description' => $this->get_row_value($row, $map, 'описание товара'),
                 'sku' => trim($sku),
                 'regular_price' => $regularPrice,
+                'sale_price' => $salePrice,
                 'base_lot_price' => $baseLotPrice,
                 'compare_at_lot_price' => $compareAtLotPrice,
                 'fixed_weight_grams' => $fixedWeight,

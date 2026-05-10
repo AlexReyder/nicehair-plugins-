@@ -244,8 +244,8 @@ trait NH_TKI_TemplateBuilderTrait
 
         $sheets = $this->build_template_sheets('Exclusive Hair', [
             'Обязательные поля: Базовая цена лота, Вес, гр, Текстура, Цветовая группа, Длина.',
-            'Базовая цена лота — текущая цена продажи Bulk. WooCommerce базовая цена товара будет автоматически равна этому значению.',
-            'Цена до скидки — необязательная старая цена лота для зачёркнутой цены на фронтенде. WooCommerce sale price для Exclusive Hair не используется.',
+            'Базовая цена лота — текущая цена продажи Bulk. Это значение сохраняется в ACF и становится WooCommerce sale price, если указана Цена до скидки.',
+            'Цена до скидки — необязательная старая цена лота для зачёркнутой цены. Если заполнена и больше Базовой цены лота, она становится WooCommerce regular price.',
             'Текстура, Цветовая группа и Длина выбираются из dropdown-списков. Списки формируются из актуальных WooCommerce-атрибутов.',
             'В наличии и Hot выбираются из dropdown-списка: да или нет.',
             'Статус в шаблоне не заполняется: товары импортируются в статусе publish.',
@@ -318,18 +318,48 @@ trait NH_TKI_TemplateBuilderTrait
     }
     private function build_custom_hair_template_sheets(): array
     {
-        return $this->build_template_sheets('Custom Hair', [
-            'Один товар = один Тип наращивания / product form, например Bulk или Genius weft.',
-            'Цветовые опции необязательны: если оставить пусто, новый товар создастся без цветов, а у существующего товара цвета не изменятся.',
-            'Формат цветовых опций: #1|1|dark|SKU-01.png; #18|18|light|SKU-02.png. Группы: dark, middle, light.',
-            'Доступные длины/качества/текстуры можно перечислять через запятую. Если оставить пустыми, карточка покажет все доступные значения.',
+        $attributeLists = [
+            'length' => [
+                'label' => 'Доступные длины',
+                'taxonomy' => 'pa_length',
+                'range' => 'F2:F1000',
+                'defined_name' => 'nh_custom_lengths',
+                'error_title' => 'Некорректная длина',
+                'error' => 'Выберите длину из выпадающего списка или перечислите несколько значений через запятую.',
+            ],
+            'hair_quality' => [
+                'label' => 'Доступные качества',
+                'taxonomy' => 'pa_hair_quality',
+                'range' => 'G2:G1000',
+                'defined_name' => 'nh_custom_qualities',
+                'error_title' => 'Некорректное качество волос',
+                'error' => 'Выберите качество из выпадающего списка или перечислите несколько значений через запятую.',
+            ],
+            'texture' => [
+                'label' => 'Доступные текстуры',
+                'taxonomy' => 'pa_texture',
+                'range' => 'H2:H1000',
+                'defined_name' => 'nh_custom_textures',
+                'error_title' => 'Некорректная текстура',
+                'error' => 'Выберите текстуру из выпадающего списка или перечислите несколько значений через запятую.',
+            ],
+        ];
+
+        $sheets = $this->build_template_sheets('Custom Hair', [
+            'Один товар Custom Hair = один тип наращивания / product form. Название товара и есть этот тип, например Bulk или Genius weft.',
+            'Отдельная колонка "Тип наращивания" больше не используется: название товара создаёт/обновляет term в pa_extension_type.',
+            'Доступные длины, качества и текстуры выбираются из dropdown-списков на основе актуальных WooCommerce-атрибутов. Для нескольких значений перечислите их через запятую.',
+            'Цветовые опции выбираются из dropdown-списка на основе активных цветов из ACF-страницы "Цвета Custom Hair". Для нескольких цветов перечислите их через запятую.',
+            'Цветовые опции необязательны: если оставить пусто, новый товар создастся без выбранных глобальных цветов, а у существующего товара выбранные цвета не изменятся.',
+            'В наличии и Hot выбираются из dropdown-списка: да или нет.',
+            'Статус в шаблоне не заполняется: товары импортируются в статусе publish.',
+            'Фото не заполняются в таблице: импортер ищет файлы в ZIP автоматически по SKU-prefix, например CUSTOM-001-01.jpg, CUSTOM-001-02.jpg.',
         ], [
             'Название товара',
             'Описание товара',
             'Артикул',
             'Цена без скидки',
             'Цена со скидкой',
-            'Тип наращивания',
             'Доступные длины',
             'Доступные качества',
             'Доступные текстуры',
@@ -338,11 +368,80 @@ trait NH_TKI_TemplateBuilderTrait
             'Вес по умолчанию, гр',
             'Цветовые опции',
             'В наличии',
-            'Featured',
+            'Hot',
             'Ссылка на видео',
-            'Фото',
-            'Статус',
         ]);
+
+        $dataValidations = [];
+        $dictionaryLists = [
+            'nh_custom_yes_no' => [
+                'label' => 'Да / Нет',
+                'values' => ['да', 'нет'],
+            ],
+        ];
+
+        $colorOptions = $this->get_custom_hair_global_color_dropdown_options();
+
+        if ($colorOptions !== []) {
+            $dictionaryLists['nh_custom_colors'] = [
+                'label' => 'Цветовые опции',
+                'values' => $colorOptions,
+            ];
+            $dataValidations[] = [
+                'type' => 'list',
+                'sqref' => 'L2:L1000',
+                'formula1' => 'nh_custom_colors',
+                'allow_blank' => true,
+                'show_error_message' => false,
+                'error_style' => 'warning',
+                'error_title' => 'Некорректная цветовая опция',
+                'error' => 'Выберите цвет из выпадающего списка или перечислите несколько цветов через запятую.',
+            ];
+        }
+
+        foreach ($attributeLists as $listConfig) {
+            $options = $this->get_product_attribute_term_options((string) $listConfig['taxonomy']);
+
+            if ($options === []) {
+                continue;
+            }
+
+            $definedName = (string) $listConfig['defined_name'];
+            $dictionaryLists[$definedName] = [
+                'label' => (string) $listConfig['label'],
+                'values' => $options,
+            ];
+            $dataValidations[] = [
+                'type' => 'list',
+                'sqref' => (string) $listConfig['range'],
+                'formula1' => $definedName,
+                'allow_blank' => true,
+                'show_error_message' => false,
+                'error_style' => 'warning',
+                'error_title' => (string) $listConfig['error_title'],
+                'error' => (string) $listConfig['error'],
+            ];
+        }
+
+        foreach (['M2:M1000', 'N2:N1000'] as $yesNoRange) {
+            $dataValidations[] = [
+                'type' => 'list',
+                'sqref' => $yesNoRange,
+                'formula1' => 'nh_custom_yes_no',
+                'allow_blank' => true,
+                'show_error_message' => true,
+                'error_title' => 'Некорректное значение',
+                'error' => 'Выберите значение да или нет.',
+            ];
+        }
+
+        if ($dataValidations !== []) {
+            $sheets[0]['data_validations'] = $dataValidations;
+        }
+
+        $sheets[] = $this->build_custom_hair_dictionary_sheet($dictionaryLists);
+
+        return $sheets;
     }
     private function get_product_attribute_term_options(string $taxonomy): array
     {
@@ -434,6 +533,61 @@ trait NH_TKI_TemplateBuilderTrait
     private function build_exclusive_hair_dictionary_sheet(array $dictionaryLists): array
     {
         $dictionarySheetName = 'Справочник Exclusive';
+        $columns = array_values($dictionaryLists);
+        $definedNames = [];
+        $maxRows = 1;
+
+        foreach ($columns as $column) {
+            $maxRows = max($maxRows, count((array) ($column['values'] ?? [])) + 1);
+        }
+
+        $rows = [];
+
+        for ($rowIndex = 0; $rowIndex < $maxRows; $rowIndex++) {
+            $row = [];
+
+            foreach ($columns as $column) {
+                if ($rowIndex === 0) {
+                    $row[] = (string) ($column['label'] ?? '');
+                } else {
+                    $values = array_values((array) ($column['values'] ?? []));
+                    $row[] = (string) ($values[$rowIndex - 1] ?? '');
+                }
+            }
+
+            $rows[] = $row;
+        }
+
+        foreach (array_keys($dictionaryLists) as $columnIndex => $definedName) {
+            $values = array_values((array) ($dictionaryLists[$definedName]['values'] ?? []));
+
+            if ($values === []) {
+                continue;
+            }
+
+            $definedNames[] = [
+                'name' => (string) $definedName,
+                'ref' => sprintf(
+                    "'%s'!\$%s\$2:\$%s\$%d",
+                    str_replace("'", "''", $dictionarySheetName),
+                    $this->xlsx_column_name($columnIndex),
+                    $this->xlsx_column_name($columnIndex),
+                    count($values) + 1
+                ),
+            ];
+        }
+
+        return [
+            'name' => $dictionarySheetName,
+            'hidden' => true,
+            'rows' => $rows,
+            'defined_names' => $definedNames,
+        ];
+    }
+
+    private function build_custom_hair_dictionary_sheet(array $dictionaryLists): array
+    {
+        $dictionarySheetName = 'Справочник Custom';
         $columns = array_values($dictionaryLists);
         $definedNames = [];
         $maxRows = 1;

@@ -174,7 +174,7 @@ trait NH_TKI_ExportBuilderTrait
                 $product->get_description() !== '' ? $product->get_description() : $product->get_short_description(),
                 $product->get_sku(),
                 $this->format_export_number($this->get_product_numeric_meta_value((int) $product->get_id(), 'nh_base_lot_price')),
-                $this->format_export_number($this->get_product_numeric_meta_value((int) $product->get_id(), 'nh_compare_at_lot_price')),
+                $this->format_exclusive_compare_at_price_export($product),
                 $this->format_export_number($this->get_product_numeric_meta_value((int) $product->get_id(), 'nh_fixed_weight_grams')),
                 $this->get_product_attribute_export_value((int) $product->get_id(), 'pa_texture'),
                 $this->get_product_attribute_export_value((int) $product->get_id(), 'pa_color_group'),
@@ -187,6 +187,22 @@ trait NH_TKI_ExportBuilderTrait
 
         return $rows;
     }
+
+    private function format_exclusive_compare_at_price_export(WC_Product_Simple $product): string
+    {
+        $salePrice = $product->get_sale_price();
+        $regularPrice = $product->get_regular_price();
+
+        if ($salePrice !== '' && $regularPrice !== '' && is_numeric($salePrice) && is_numeric($regularPrice)) {
+            if ((float) $regularPrice > (float) $salePrice) {
+                return $this->format_export_number($regularPrice);
+            }
+        }
+
+        $legacyCompareAt = $this->get_product_numeric_meta_value((int) $product->get_id(), 'nh_compare_at_lot_price');
+
+        return $this->format_export_number($legacyCompareAt);
+    }
     private function build_custom_hair_export_rows(): array
     {
         $rows = [[
@@ -195,7 +211,6 @@ trait NH_TKI_ExportBuilderTrait
             'Артикул',
             'Цена без скидки',
             'Цена со скидкой',
-            'Тип наращивания',
             'Доступные длины',
             'Доступные качества',
             'Доступные текстуры',
@@ -204,10 +219,8 @@ trait NH_TKI_ExportBuilderTrait
             'Вес по умолчанию, гр',
             'Цветовые опции',
             'В наличии',
-            'Featured',
+            'Hot',
             'Ссылка на видео',
-            'Фото',
-            'Статус',
         ]];
 
         foreach ($this->get_export_product_ids('custom_hair') as $productId) {
@@ -223,7 +236,6 @@ trait NH_TKI_ExportBuilderTrait
                 $product->get_sku(),
                 $this->format_export_price($product->get_regular_price()),
                 $this->format_export_price($product->get_sale_price()),
-                $this->get_product_attribute_export_value((int) $product->get_id(), 'pa_extension_type'),
                 $this->get_custom_hair_choice_export_value((int) $product->get_id(), 'nh_custom_hair_available_lengths', $this->get_custom_hair_length_choice_map(), false),
                 $this->get_custom_hair_choice_export_value((int) $product->get_id(), 'nh_custom_hair_available_qualities', $this->get_custom_hair_quality_choice_map()),
                 $this->get_custom_hair_choice_export_value((int) $product->get_id(), 'nh_custom_hair_available_textures', $this->get_custom_hair_texture_choice_map()),
@@ -358,28 +370,63 @@ trait NH_TKI_ExportBuilderTrait
     }
     private function format_custom_hair_color_options_export(int $productId): string
     {
+        $selectedKeys = $this->get_custom_hair_selected_global_color_keys($productId);
+
+        if ($selectedKeys !== []) {
+            $choiceMap = $this->get_custom_hair_global_color_choice_map();
+            $labels = [];
+
+            foreach ($selectedKeys as $key) {
+                $key = $this->normalize_custom_hair_key((string) $key);
+
+                if ($key === '') {
+                    continue;
+                }
+
+                $labels[] = (string) ($choiceMap[$key] ?? $key);
+            }
+
+            return implode(', ', array_values(array_unique(array_filter($labels))));
+        }
+
+        // Backward fallback for products imported by older plugin versions.
         $rows = $this->get_custom_hair_color_option_rows($productId);
         $parts = [];
 
         foreach ($rows as $row) {
             $label = trim((string) ($row['color_label'] ?? ''));
             $value = trim((string) ($row['color_value'] ?? ''));
-            $group = trim((string) ($row['color_group'] ?? ''));
-            $imageFile = $this->get_media_field_filename($row['main_image'] ?? null);
 
             if ($label === '' && $value === '') {
                 continue;
             }
 
-            $parts[] = implode('|', [
-                $label !== '' ? $label : $value,
-                $value,
-                $group,
-                $imageFile,
-            ]);
+            $parts[] = $label !== '' ? $label : $value;
         }
 
-        return implode('; ', $parts);
+        return implode(', ', array_values(array_unique(array_filter($parts))));
+    }
+    private function get_custom_hair_selected_global_color_keys(int $productId): array
+    {
+        $rawValue = function_exists('get_field')
+            ? get_field('nh_custom_hair_selected_global_colors', $productId)
+            : get_post_meta($productId, 'nh_custom_hair_selected_global_colors', true);
+
+        $values = is_array($rawValue)
+            ? $rawValue
+            : (is_string($rawValue) && trim($rawValue) !== '' ? [$rawValue] : []);
+
+        $keys = [];
+
+        foreach ($values as $value) {
+            $key = $this->normalize_custom_hair_key((string) $value);
+
+            if ($key !== '') {
+                $keys[] = $key;
+            }
+        }
+
+        return array_values(array_unique($keys));
     }
     private function get_custom_hair_color_option_rows(int $productId): array
     {
@@ -447,54 +494,116 @@ trait NH_TKI_ExportBuilderTrait
     }
     private function get_custom_hair_length_choice_map(): array
     {
-        if (function_exists('nice_hair_get_custom_hair_length_choice_map')) {
-            $map = nice_hair_get_custom_hair_length_choice_map();
+        $map = [];
 
-            if (is_array($map) && $map !== []) {
-                return $map;
+        if (function_exists('nice_hair_get_custom_hair_length_choice_map')) {
+            $themeMap = nice_hair_get_custom_hair_length_choice_map();
+
+            if (is_array($themeMap)) {
+                $map = $themeMap;
             }
         }
 
-        return [
-            '40' => '40 cm',
-            '50' => '50 cm',
-            '60' => '60 cm',
-            '70' => '70 cm',
-            '80' => '80 cm',
-            '90' => '90 cm',
-        ];
+        if ($map === []) {
+            $map = [
+                '40' => '40 cm',
+                '50' => '50 cm',
+                '60' => '60 cm',
+                '70' => '70 cm',
+                '80' => '80 cm',
+                '90' => '90 cm',
+            ];
+        }
+
+        return $this->merge_product_attribute_terms_into_custom_choice_map($map, 'pa_length', true);
     }
     private function get_custom_hair_quality_choice_map(): array
     {
-        if (function_exists('nice_hair_get_custom_hair_quality_choice_map')) {
-            $map = nice_hair_get_custom_hair_quality_choice_map();
+        $map = [];
 
-            if (is_array($map) && $map !== []) {
-                return $map;
+        if (function_exists('nice_hair_get_custom_hair_quality_choice_map')) {
+            $themeMap = nice_hair_get_custom_hair_quality_choice_map();
+
+            if (is_array($themeMap)) {
+                $map = $themeMap;
             }
         }
 
-        return [
-            'lux' => 'Lux',
-            'premium' => 'Premium',
-            'exclusive' => 'Exclusive',
-        ];
+        if ($map === []) {
+            $map = [
+                'lux' => 'Lux',
+                'premium' => 'Premium',
+                'exclusive' => 'Exclusive',
+            ];
+        }
+
+        return $this->merge_product_attribute_terms_into_custom_choice_map($map, 'pa_hair_quality');
     }
     private function get_custom_hair_texture_choice_map(): array
     {
-        if (function_exists('nice_hair_get_custom_hair_texture_choice_map')) {
-            $map = nice_hair_get_custom_hair_texture_choice_map();
+        $map = [];
 
-            if (is_array($map) && $map !== []) {
-                return $map;
+        if (function_exists('nice_hair_get_custom_hair_texture_choice_map')) {
+            $themeMap = nice_hair_get_custom_hair_texture_choice_map();
+
+            if (is_array($themeMap)) {
+                $map = $themeMap;
             }
         }
 
-        return [
-            'soft_straight' => 'Soft straight',
-            'silky_wavy' => 'Silky wavy',
-            'amazing_curly' => 'Amazing curly',
-        ];
+        if ($map === []) {
+            $map = [
+                'soft_straight' => 'Soft straight',
+                'silky_wavy' => 'Silky wavy',
+                'amazing_curly' => 'Amazing curly',
+            ];
+        }
+
+        return $this->merge_product_attribute_terms_into_custom_choice_map($map, 'pa_texture');
+    }
+
+    private function merge_product_attribute_terms_into_custom_choice_map(array $map, string $taxonomy, bool $numericKeys = false): array
+    {
+        if (! function_exists('get_terms') || ! taxonomy_exists($taxonomy)) {
+            return $map;
+        }
+
+        $terms = get_terms([
+            'taxonomy' => $taxonomy,
+            'hide_empty' => false,
+            'orderby' => 'name',
+            'order' => 'ASC',
+        ]);
+
+        if (! is_array($terms) || is_wp_error($terms)) {
+            return $map;
+        }
+
+        foreach ($terms as $term) {
+            if (! $term instanceof WP_Term) {
+                continue;
+            }
+
+            $label = trim((string) $term->name);
+
+            if ($label === '') {
+                continue;
+            }
+
+            $key = $numericKeys
+                ? $this->normalize_custom_hair_numeric_key($label)
+                : $this->normalize_custom_hair_key($label);
+
+            if ($key === '') {
+                $key = $this->normalize_custom_hair_key((string) $term->slug);
+            }
+
+            if ($key !== '') {
+                $map[$key] = $label;
+            }
+        }
+
+        return $map;
     }
     private function get_custom_hair_color_group_choice_map(): array
     {

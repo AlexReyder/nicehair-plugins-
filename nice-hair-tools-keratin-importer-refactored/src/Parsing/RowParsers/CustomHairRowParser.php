@@ -36,13 +36,6 @@ trait NH_TKI_CustomHairRowParserTrait
                 continue;
             }
 
-            $extensionType = $this->get_row_value($row, $map, 'тип наращивания');
-
-            if ($extensionType === '') {
-                $errors[] = sprintf('Custom Hair row %d (%s): extension type is missing.', $rowNumber, $sku);
-                continue;
-            }
-
             $colorParse = $this->parse_custom_hair_color_options(
                 $this->get_row_value($row, $map, 'цветовые опции'),
                 $rowNumber,
@@ -73,9 +66,7 @@ trait NH_TKI_CustomHairRowParserTrait
             }
 
             $stockValue = $this->parse_boolean_field($this->get_row_value($row, $map, 'в наличии'), true);
-            $featuredValue = $this->parse_boolean_field($this->get_row_value($row, $map, 'featured'), false);
-            $status = strtolower($this->get_row_value($row, $map, 'статус'));
-            $status = $status === '' ? 'publish' : $status;
+            $featuredValue = $this->parse_boolean_field($this->get_first_row_value($row, $map, ['hot', 'featured']), false);
 
             if ($stockValue === null) {
                 $errors[] = sprintf('Custom Hair row %d (%s): stock value must be yes or no.', $rowNumber, $sku);
@@ -83,12 +74,7 @@ trait NH_TKI_CustomHairRowParserTrait
             }
 
             if ($featuredValue === null) {
-                $errors[] = sprintf('Custom Hair row %d (%s): Featured value must be yes or no.', $rowNumber, $sku);
-                continue;
-            }
-
-            if (! in_array($status, ['publish', 'draft'], true)) {
-                $errors[] = sprintf('Custom Hair row %d (%s): status must be publish or draft.', $rowNumber, $sku);
+                $errors[] = sprintf('Custom Hair row %d (%s): Hot value must be yes or no.', $rowNumber, $sku);
                 continue;
             }
 
@@ -98,8 +84,11 @@ trait NH_TKI_CustomHairRowParserTrait
                 'sku' => trim($sku),
                 'regular_price' => $regularPrice,
                 'sale_price' => $salePrice,
+                // For Custom Hair, the product title is the product form / extension type.
+                // Store it as pa_extension_type so the global WooCommerce attribute term
+                // is created/updated and can be reused by other shop categories.
                 'attributes' => [
-                    'pa_extension_type' => $extensionType,
+                    'pa_extension_type' => trim($title),
                 ],
                 'allowed_lengths' => $choiceParse['lengths'],
                 'allowed_qualities' => $choiceParse['qualities'],
@@ -107,13 +96,14 @@ trait NH_TKI_CustomHairRowParserTrait
                 'min_weight_grams' => $weightConfig['min'],
                 'weight_step_grams' => $weightConfig['step'],
                 'default_weight_grams' => $weightConfig['default'],
+                'selected_global_color_keys' => array_values((array) ($colorParse['keys'] ?? [])),
                 'color_options' => $colorParse['options'],
                 'color_options_provided' => (bool) ($colorParse['provided'] ?? false),
                 'in_stock' => $stockValue,
                 'featured' => $featuredValue,
                 'video_url' => $this->sanitize_video_url($this->get_row_value($row, $map, 'ссылка на видео')),
                 'photo_files' => $this->get_row_value($row, $map, 'фото'),
-                'status' => $status,
+                'status' => 'publish',
             ];
         }
 
@@ -292,15 +282,16 @@ trait NH_TKI_CustomHairRowParserTrait
         $value = trim($value);
         $errors = [];
         $warnings = [];
-        $options = [];
+        $keys = [];
 
         if ($value === '') {
             return [
+                'keys' => [],
                 'options' => [],
                 'provided' => false,
                 'warnings' => [
                     sprintf(
-                        'Custom Hair row %d (%s): color options are empty; importer will not change them. New products need color options added manually before purchase.',
+                        'Custom Hair row %d (%s): color options are empty; importer will not change selected global colors. New products need colors selected manually before purchase.',
                         $rowNumber,
                         $sku
                     ),
@@ -309,7 +300,25 @@ trait NH_TKI_CustomHairRowParserTrait
             ];
         }
 
-        $parts = preg_split('/[;\r\n]+/u', $value) ?: [];
+        $choiceMap = $this->get_custom_hair_global_color_choice_map();
+
+        if ($choiceMap === []) {
+            return [
+                'keys' => [],
+                'options' => [],
+                'provided' => true,
+                'warnings' => [],
+                'errors' => [
+                    sprintf(
+                        'Custom Hair row %d (%s): global Custom Hair color library is empty. Add active colors in "Цвета Custom Hair" or leave the column empty.',
+                        $rowNumber,
+                        $sku
+                    ),
+                ],
+            ];
+        }
+
+        $parts = preg_split('/[\r\n;,]+/u', $value) ?: [];
         $seen = [];
 
         foreach ($parts as $part) {
@@ -319,60 +328,193 @@ trait NH_TKI_CustomHairRowParserTrait
                 continue;
             }
 
-            $fields = array_map('trim', explode('|', $part));
-            $label = (string) ($fields[0] ?? '');
-            $rawValue = (string) ($fields[1] ?? '');
-            $group = (string) ($fields[2] ?? '');
-            $photoFile = (string) ($fields[3] ?? '');
-
-            if ($label === '') {
-                $errors[] = sprintf('Custom Hair row %d (%s): color option label is missing.', $rowNumber, $sku);
-                continue;
+            // Backward tolerance: if an old value like "#1|1|dark|file.jpg" is passed,
+            // try to resolve the first meaningful cell against the global color library.
+            if (str_contains($part, '|')) {
+                $legacyFields = array_values(array_filter(array_map('trim', explode('|', $part)), static fn (string $field): bool => $field !== ''));
+                $part = (string) ($legacyFields[0] ?? $part);
             }
 
-            if ($rawValue === '') {
-                $rawValue = str_starts_with($label, '#') ? ltrim($label, '#') : $label;
-            }
-
-            $groupKey = $this->normalize_custom_hair_color_group($group);
-
-            if ($group !== '' && $groupKey === '') {
-                $errors[] = sprintf('Custom Hair row %d (%s): unknown color group "%s".', $rowNumber, $sku, $group);
-                continue;
-            }
-
-            $key = $this->normalize_custom_hair_key($rawValue !== '' ? $rawValue : $label);
+            $key = $this->resolve_custom_hair_global_color_key($part, $choiceMap);
 
             if ($key === '') {
-                $errors[] = sprintf('Custom Hair row %d (%s): color option value is invalid.', $rowNumber, $sku);
+                $errors[] = sprintf('Custom Hair row %d (%s): unknown color option "%s". Use an active color from "Цвета Custom Hair".', $rowNumber, $sku, $part);
                 continue;
             }
 
             if (isset($seen[$key])) {
-                $errors[] = sprintf('Custom Hair row %d (%s): duplicate color option "%s".', $rowNumber, $sku, $label);
                 continue;
             }
 
             $seen[$key] = true;
-            $options[] = [
-                'key' => $key,
-                'label' => $label,
-                'value' => $rawValue,
-                'group' => $groupKey,
-                'photo_file' => $photoFile,
-            ];
+            $keys[] = $key;
         }
 
-        if ($options === [] && $errors === []) {
+        if ($keys === [] && $errors === []) {
             $errors[] = sprintf('Custom Hair row %d (%s): color options format is invalid.', $rowNumber, $sku);
         }
 
         return [
-            'options' => $options,
+            'keys' => $keys,
+            'options' => array_map(static fn (string $key): array => ['key' => $key], $keys),
             'provided' => true,
             'warnings' => $warnings,
             'errors' => $errors,
         ];
+    }
+
+    private function get_custom_hair_global_color_dropdown_options(): array
+    {
+        $map = $this->get_custom_hair_global_color_choice_map();
+
+        return array_values($map);
+    }
+
+    private function get_custom_hair_global_color_choice_map(): array
+    {
+        $colors = $this->get_custom_hair_global_color_rows();
+        $map = [];
+
+        foreach ($colors as $color) {
+            $key = (string) ($color['key'] ?? '');
+            $label = trim((string) ($color['label'] ?? ''));
+
+            if ($key === '' || $label === '') {
+                continue;
+            }
+
+            $map[$key] = $label;
+        }
+
+        return $map;
+    }
+
+    private function get_custom_hair_global_color_rows(): array
+    {
+        if (function_exists('nice_hair_get_custom_hair_global_color_options')) {
+            $themeColors = nice_hair_get_custom_hair_global_color_options(true);
+
+            if (is_array($themeColors)) {
+                $colors = [];
+
+                foreach ($themeColors as $index => $color) {
+                    if (! is_array($color)) {
+                        continue;
+                    }
+
+                    $key = $this->normalize_custom_hair_key((string) ($color['key'] ?? $color['color_key'] ?? ''));
+                    $label = trim((string) ($color['label'] ?? $color['color_label'] ?? ''));
+                    $value = trim((string) ($color['value'] ?? $color['color_value'] ?? ''));
+                    $sortOrder = isset($color['sort_order']) && is_numeric($color['sort_order'])
+                        ? (int) $color['sort_order']
+                        : (100 + (int) $index);
+
+                    if ($key === '' || $label === '') {
+                        continue;
+                    }
+
+                    $colors[$key] = [
+                        'key' => $key,
+                        'label' => $label,
+                        'value' => $value !== '' ? $value : $label,
+                        'sort_order' => $sortOrder,
+                    ];
+                }
+
+                return $this->sort_custom_hair_global_color_rows(array_values($colors));
+            }
+        }
+
+        if (! function_exists('get_field')) {
+            return [];
+        }
+
+        $postId = function_exists('nice_hair_custom_hair_colors_post_id')
+            ? nice_hair_custom_hair_colors_post_id()
+            : 'nh_custom_hair_colors';
+        $rows = get_field('nh_custom_hair_global_colors', $postId);
+
+        if (! is_array($rows)) {
+            return [];
+        }
+
+        $colors = [];
+
+        foreach ($rows as $index => $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $isActive = array_key_exists('is_active', $row) ? (bool) $row['is_active'] : true;
+
+            if (! $isActive) {
+                continue;
+            }
+
+            $key = $this->normalize_custom_hair_key((string) ($row['color_key'] ?? ''));
+            $label = trim((string) ($row['color_label'] ?? ''));
+            $value = trim((string) ($row['color_value'] ?? ''));
+            $sortOrder = isset($row['sort_order']) && is_numeric($row['sort_order'])
+                ? (int) $row['sort_order']
+                : (100 + (int) $index);
+
+            if ($key === '' || $label === '') {
+                continue;
+            }
+
+            $colors[$key] = [
+                'key' => $key,
+                'label' => $label,
+                'value' => $value !== '' ? $value : $label,
+                'sort_order' => $sortOrder,
+            ];
+        }
+
+        return $this->sort_custom_hair_global_color_rows(array_values($colors));
+    }
+
+    private function sort_custom_hair_global_color_rows(array $colors): array
+    {
+        usort($colors, static function (array $left, array $right): int {
+            $leftOrder = isset($left['sort_order']) && is_numeric($left['sort_order']) ? (int) $left['sort_order'] : 100;
+            $rightOrder = isset($right['sort_order']) && is_numeric($right['sort_order']) ? (int) $right['sort_order'] : 100;
+
+            if ($leftOrder === $rightOrder) {
+                return strcmp((string) ($left['label'] ?? ''), (string) ($right['label'] ?? ''));
+            }
+
+            return $leftOrder <=> $rightOrder;
+        });
+
+        return array_values($colors);
+    }
+
+    private function resolve_custom_hair_global_color_key(string $value, array $choiceMap): string
+    {
+        $normalized = $this->normalize_custom_hair_key($value);
+
+        if ($normalized !== '' && isset($choiceMap[$normalized])) {
+            return $normalized;
+        }
+
+        foreach ($this->get_custom_hair_global_color_rows() as $color) {
+            $key = (string) ($color['key'] ?? '');
+            $label = trim((string) ($color['label'] ?? ''));
+            $colorValue = trim((string) ($color['value'] ?? ''));
+            $candidates = array_values(array_unique(array_filter([
+                $key,
+                $label,
+                $colorValue,
+            ])));
+
+            foreach ($candidates as $candidate) {
+                if ($this->normalize_custom_hair_key((string) $candidate) === $normalized) {
+                    return $key;
+                }
+            }
+        }
+
+        return '';
     }
     private function normalize_custom_hair_color_group(string $value): string
     {
